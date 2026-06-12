@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "refresh_seconds": 180,
+  "primary": {
+    "provider": "codex",
+    "metric": "five_hour",
+    "display_mode": "used_percent"
+  },
+  "thresholds": {
+    "warning_used_percent": 75,
+    "critical_used_percent": 95,
+    "stale_after_minutes": 15,
+    "last_good_valid_minutes": 30
+  },
+  "providers": {
+    "codex": {
+      "enabled": true,
+      "url": "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+      "profile_dir": "~/.config/ai-usage-status/profiles/chatgpt",
+      "headless": true,
+      "wait_ms": 8000,
+      "debug_text": false
+    },
+    "claude": {
+      "enabled": true,
+      "url": "https://claude.ai/settings/usage",
+      "profile_dir": "~/.config/ai-usage-status/profiles/claude",
+      "headless": true,
+      "wait_ms": 8000,
+      "debug_text": false
+    }
+  }
+}

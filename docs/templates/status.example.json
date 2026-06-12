@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-06-12T05:50:00.000Z",
+  "ok": true,
+  "stale": false,
+  "primary": {
+    "provider": "codex",
+    "metric": "five_hour",
+    "used_percent": 100,
+    "remaining_percent": 0,
+    "label": "100%"
+  },
+  "codex": {
+    "ok": true,
+    "source": "playwright",
+    "updated_at": "2026-06-12T05:50:00.000Z",
+    "five_hour": {
+      "used_percent": 100,
+      "remaining_percent": 0,
+      "reset_label": "4:39",
+      "reset_epoch": null
+    },
+    "weekly": {
+      "used_percent": 26,
+      "remaining_percent": 74,
+      "reset_label": "18 jun 2026 15:29",
+      "reset_epoch": null
+    },
+    "credits_remaining": 128
+  },
+  "claude": {
+    "ok": true,
+    "source": "playwright",
+    "updated_at": "2026-06-12T05:50:00.000Z",
+    "session": {
+      "used_percent": 13,
+      "remaining_percent": 87,
+      "reset_label": "en 2 h 33 min",
+      "reset_epoch": null
+    },
+    "weekly": {
+      "used_percent": 1,
+      "remaining_percent": 99,
+      "reset_label": "mié., 11:59 p.m.",
+      "reset_epoch": null
+    },
+    "daily_routines": {
+      "used": 0,
+      "limit": 5
+    }
+  },
+  "errors": []
+}

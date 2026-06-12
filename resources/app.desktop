@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=AI Usage
+Comment=Shows Codex/ChatGPT and Claude usage in the COSMIC topbar
+Type=Application
+Icon=com.github.brandonhc33.ai-usage
+Exec=ai-usage-applet %F
+Terminal=false
+StartupNotify=true
+Categories=COSMIC
+Keywords=AI;Codex;Claude;Usage;Tokens;COSMIC;
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+MimeType=

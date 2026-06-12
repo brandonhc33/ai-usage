@@ -1,0 +1,17 @@
+{
+  "name": "ai-usage-status-collector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Playwright collector that writes ~/.cache/ai-usage-status/status.json for the AI Usage COSMIC applet",
+  "bin": {
+    "ai-usage-auth": "./ai-usage-auth.mjs",
+    "ai-usage-collect": "./ai-usage-collect.mjs"
+  },
+  "scripts": {
+    "fake-status": "node merge-status.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}

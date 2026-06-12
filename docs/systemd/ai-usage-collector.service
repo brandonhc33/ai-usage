@@ -1,0 +1,7 @@
+[Unit]
+Description=AI usage status collector
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ai-usage-collect
