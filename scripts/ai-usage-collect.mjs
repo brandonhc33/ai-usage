@@ -3,6 +3,8 @@ import { chromium } from 'playwright';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { clearStaleSingletonLock } from './lib/chrome-profile.mjs';
+import { withDisplay } from './lib/xvfb.mjs';
 
 const HOME = os.homedir();
 const CACHE_DIR = path.join(HOME, '.cache', 'ai-usage-status');
@@ -25,7 +27,7 @@ const DEFAULT_CONFIG = {
     },
     claude: {
       enabled: true,
-      url: 'https://claude.ai/settings/usage',
+      url: 'https://claude.ai/new#settings/usage',
       profile_dir: '~/.config/ai-usage-status/profiles/claude',
       headless: true,
       wait_ms: 8000,
@@ -57,7 +59,7 @@ function parseCodex(raw) {
   const text = normalizeText(raw);
 
   const fiveHour = text.match(
-    /(Límite de uso de 5 horas|5-hour usage limit)\s+(\d+)\s*%\s*(restante|remaining).*?(Se reinicia a las|Resets)\s+(.+?)(?=Límite de uso semanal|Weekly usage limit|Créditos restantes|Credits remaining|Recarga automática|Auto-reload|$)/i,
+    /(Límite de uso de 5 horas|5[\s-]?hour usage limit)\s+(\d+)\s*%\s*(restante|remaining).*?(Se reinicia a las|Resets)\s+(.+?)(?=Límite de uso semanal|Weekly usage limit|Créditos restantes|Credits remaining|Recarga automática|Auto-reload|$)/i,
   );
 
   const weekly = text.match(
@@ -150,17 +152,29 @@ async function scrapeProvider(name, providerConfig, parser) {
   const profileDir = expandHome(providerConfig.profile_dir);
   try {
     await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
-    const context = await chromium.launchPersistentContext(profileDir, {
-      headless: providerConfig.headless !== false,
-      viewport: { width: 1280, height: 900 },
+    await clearStaleSingletonLock(profileDir);
+
+    const text = await withDisplay(async (display) => {
+      const context = await chromium.launchPersistentContext(profileDir, {
+        // Mismo motivo que en ai-usage-auth.mjs: el Chrome real evita los
+        // desafíos "Verify you are human" de Cloudflare que bloquean al
+        // Chromium de Playwright.
+        channel: 'chrome',
+        headless: display.headless ?? providerConfig.headless !== false,
+        viewport: { width: 1280, height: 900 },
+        args: ['--disable-blink-features=AutomationControlled', ...(display.args ?? [])],
+        env: display.env,
+      });
+
+      try {
+        const page = await context.newPage();
+        await page.goto(providerConfig.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+        await page.waitForTimeout(providerConfig.wait_ms ?? 8000);
+        return await page.locator('body').innerText({ timeout: 30_000 });
+      } finally {
+        await context.close();
+      }
     });
-
-    const page = await context.newPage();
-    await page.goto(providerConfig.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    await page.waitForTimeout(providerConfig.wait_ms ?? 8000);
-
-    const text = await page.locator('body').innerText({ timeout: 30_000 });
-    await context.close();
 
     if (/iniciar sesión|log in|sign in|sign up/i.test(text)) {
       throw Object.assign(new Error(`${name} requiere iniciar sesión.`), { code: 'login_required' });

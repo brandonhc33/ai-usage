@@ -4,7 +4,7 @@ use crate::format;
 use crate::icons::IconKind;
 use crate::status::{self, ClaudeStatus, CodexStatus, StatusState, UsageMetric};
 use cosmic::iced::window::Id;
-use cosmic::iced::{Alignment, Length, Rectangle, Subscription, time};
+use cosmic::iced::{Alignment, Length, Limits, Rectangle, Subscription, time};
 use cosmic::prelude::*;
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::{theme, widget};
@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::Duration;
 
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/codex/cloud/settings/analytics#usage";
-const CLAUDE_USAGE_URL: &str = "https://claude.ai/settings/usage";
+const CLAUDE_USAGE_URL: &str = "https://claude.ai/new#settings/usage";
 
 /// The application model stores app-specific state used to describe its interface and
 /// drive its logic.
@@ -33,6 +33,7 @@ pub enum Message {
     Tick,
     Surface(cosmic::surface::Action),
     RunCollector,
+    RunLogin(&'static str),
     OpenLink(&'static str),
 }
 
@@ -80,7 +81,7 @@ impl cosmic::Application for AppModel {
     ///
     /// The applet's button in the panel will be drawn using the main view method.
     fn view(&self) -> Element<'_, Self::Message> {
-        let topbar = format::topbar(&self.status);
+        let entries = format::topbar_entries(&self.status);
         let suggested = self.core.applet.suggested_size(true);
         let (padding_major, padding_minor) = self.core.applet.suggested_padding(true);
         let vertical_padding = if self.core.applet.is_horizontal() {
@@ -89,21 +90,33 @@ impl cosmic::Application for AppModel {
             padding_major
         };
 
-        let icon = widget::icon(topbar.icon.handle())
-            .width(Length::Fixed(f32::from(suggested.0)))
-            .height(Length::Fixed(f32::from(suggested.1)));
+        let mut content = widget::Row::new().align_y(Alignment::Center).spacing(10);
 
-        let label = widget::text(topbar.label.clone()).size(14);
-        let label = match topbar.severity.color() {
-            Some(color) => label.class(theme::Text::Color(color)),
-            None => label,
-        };
+        for entry in &entries {
+            let icon = widget::icon(entry.icon.handle())
+                .width(Length::Fixed(f32::from(suggested.0)))
+                .height(Length::Fixed(f32::from(suggested.1)));
 
-        let content = widget::Row::new()
-            .align_y(Alignment::Center)
-            .spacing(4)
-            .push(icon)
-            .push(label);
+            let label = widget::text(entry.label.clone()).size(14);
+            let label = match entry.severity.color() {
+                Some(color) => label.class(theme::Text::Color(color)),
+                None => label,
+            };
+
+            content = content.push(
+                widget::Row::new()
+                    .align_y(Alignment::Center)
+                    .spacing(4)
+                    .push(icon)
+                    .push(label),
+            );
+        }
+
+        let tooltip = entries
+            .iter()
+            .map(|entry| entry.tooltip.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let button_height = f32::from(suggested.1 + 2 * vertical_padding);
 
@@ -136,25 +149,47 @@ impl cosmic::Application for AppModel {
                             height: bounds.height as i32,
                         };
 
+                        // Wider than the default 360px so long reset labels
+                        // ("reinicia Jun 18, 2026 3:29 PM") fit on one line.
+                        popup_settings.positioner.size_limits = Limits::NONE
+                            .min_width(640.0)
+                            .max_width(640.0)
+                            .min_height(1.0)
+                            .max_height(1080.0);
+
                         popup_settings
                     },
                     Some(Box::new(|state: &AppModel| {
-                        Element::from(state.core.applet.popup_container(popup_view(state)))
-                            .map(cosmic::Action::App)
+                        // `popup_container` itself wraps its content in an
+                        // `Autosize` hardcoded to max_width(360.0), which
+                        // overrides the positioner's size_limits above and
+                        // wraps long labels. Override it back to 640px.
+                        Element::from(
+                            state
+                                .core
+                                .applet
+                                .popup_container(popup_view(state))
+                                .min_width(640.0)
+                                .max_width(640.0),
+                        )
+                        .map(cosmic::Action::App)
                     })),
                 ))
             }
         });
 
+        // The panel gives applet surfaces an icon-sized window by default,
+        // which clips a multi-provider Row of icons + percentages. Autosize
+        // the window to fit the content instead.
         self.core
             .applet
-            .applet_tooltip(
+            .autosize_window(self.core.applet.applet_tooltip(
                 button,
-                topbar.tooltip,
+                tooltip,
                 self.popup.is_some(),
                 Message::Surface,
                 self.core.main_window_id(),
-            )
+            ))
             .into()
     }
 
@@ -190,6 +225,9 @@ impl cosmic::Application for AppModel {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     Message::Tick
                 });
+            }
+            Message::RunLogin(provider) => {
+                run_login(provider);
             }
             Message::OpenLink(url) => {
                 open_link(url);
@@ -254,13 +292,38 @@ fn popup_view(state: &AppModel) -> Element<'_, Message> {
 
     content = content.push(widget::divider::horizontal::default());
 
-    let actions = widget::Row::new()
+    let actions = widget::Column::new()
         .spacing(8)
-        .push(widget::button::standard("Actualizar ahora").on_press(Message::RunCollector))
-        .push(widget::button::text("Panel Codex").on_press(Message::OpenLink(CODEX_USAGE_URL)))
-        .push(widget::button::text("Panel Claude").on_press(Message::OpenLink(CLAUDE_USAGE_URL)));
+        .push(
+            widget::button::standard("Actualizar ahora")
+                .on_press(Message::RunCollector)
+                .width(Length::Fill),
+        )
+        .push(
+            widget::button::text("Iniciar sesión Codex")
+                .on_press(Message::RunLogin("codex"))
+                .width(Length::Fill),
+        )
+        .push(
+            widget::button::text("Iniciar sesión Claude")
+                .on_press(Message::RunLogin("claude"))
+                .width(Length::Fill),
+        );
 
-    content = content.push(actions);
+    let links = widget::Row::new()
+        .spacing(8)
+        .push(
+            widget::button::text("Panel Codex")
+                .on_press(Message::OpenLink(CODEX_USAGE_URL))
+                .width(Length::Fill),
+        )
+        .push(
+            widget::button::text("Panel Claude")
+                .on_press(Message::OpenLink(CLAUDE_USAGE_URL))
+                .width(Length::Fill),
+        );
+
+    content = content.push(actions).push(links);
 
     content.into()
 }
@@ -333,11 +396,17 @@ fn card_header<'a>(title: &'a str, icon: IconKind) -> Element<'a, Message> {
 }
 
 fn metric_row<'a>(label: &'a str, metric: &Option<UsageMetric>) -> Element<'a, Message> {
-    widget::Row::new()
-        .spacing(8)
-        .push(widget::text(label).width(Length::Fixed(64.0)))
-        .push(widget::text(format::usage_summary(metric)).width(Length::Fixed(150.0)))
-        .push(widget::text(format!("reinicia {}", format::reset_label(metric))))
+    widget::Column::new()
+        .push(
+            widget::Row::new()
+                .spacing(8)
+                .push(widget::text(label).width(Length::Fixed(64.0)))
+                .push(widget::text(format::usage_summary(metric))),
+        )
+        .push(widget::text::caption(format!(
+            "reinicia {}",
+            format::reset_label(metric)
+        )))
         .into()
 }
 
@@ -346,6 +415,14 @@ fn metric_row<'a>(label: &'a str, metric: &Option<UsageMetric>) -> Element<'a, M
 fn run_collector() {
     if let Err(why) = Command::new("ai-usage-collect").spawn() {
         eprintln!("ai-usage-applet: no se pudo ejecutar ai-usage-collect: {why}");
+    }
+}
+
+/// Launches the external login helper, which opens a visible Chromium window
+/// for the user to sign in and persists the session for the collector.
+fn run_login(provider: &str) {
+    if let Err(why) = Command::new("ai-usage-auth").arg(provider).spawn() {
+        eprintln!("ai-usage-applet: no se pudo ejecutar ai-usage-auth {provider}: {why}");
     }
 }
 

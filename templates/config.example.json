@@ -7,8 +7,8 @@
     "display_mode": "used_percent"
   },
   "thresholds": {
-    "warning_used_percent": 75,
-    "critical_used_percent": 95,
+    "warning_used_percent": 51,
+    "critical_used_percent": 76,
     "stale_after_minutes": 15,
     "last_good_valid_minutes": 30
   },
@@ -23,7 +23,7 @@
     },
     "claude": {
       "enabled": true,
-      "url": "https://claude.ai/settings/usage",
+      "url": "https://claude.ai/new#settings/usage",
       "profile_dir": "~/.config/ai-usage-status/profiles/claude",
       "headless": true,
       "wait_ms": 8000,

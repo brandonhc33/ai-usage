@@ -10,8 +10,8 @@ use crate::status::{DailyRoutines, ErrorEntry, StatusFile, StatusState, UsageMet
 use cosmic::iced::Color;
 
 /// Mirrors the defaults in `docs/templates/config.example.json`.
-pub const WARNING_USED_PERCENT: f64 = 75.0;
-pub const CRITICAL_USED_PERCENT: f64 = 95.0;
+pub const WARNING_USED_PERCENT: f64 = 51.0;
+pub const CRITICAL_USED_PERCENT: f64 = 76.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -29,7 +29,7 @@ impl Severity {
     /// default text color.
     pub fn color(self) -> Option<Color> {
         match self {
-            Severity::Normal => None,
+            Severity::Normal => Some(Color::from_rgb(0.18, 0.75, 0.35)),
             Severity::Warning => Some(Color::from_rgb(0.95, 0.61, 0.07)),
             Severity::Critical => Some(Color::from_rgb(0.90, 0.18, 0.22)),
             Severity::Muted => Some(Color::from_rgb(0.55, 0.57, 0.60)),
@@ -54,60 +54,99 @@ fn severity_for_percent(used_percent: Option<f64>) -> Severity {
     }
 }
 
-fn provider_name(provider: &str) -> &'static str {
-    match provider {
-        "codex" => "Codex",
-        "claude" => "Claude",
-        _ => "AI",
-    }
-}
-
-/// Computes the topbar icon, label and color for the current status.
-pub fn topbar(state: &StatusState) -> Topbar {
+/// Computes one topbar icon/label/severity per enabled provider, so the
+/// topbar can show Codex and Claude side by side instead of a single
+/// "primary" provider.
+pub fn topbar_entries(state: &StatusState) -> Vec<Topbar> {
     match state {
-        StatusState::Missing => Topbar {
+        StatusState::Missing => vec![Topbar {
             icon: IconKind::Ai,
             label: "--".to_string(),
             severity: Severity::Muted,
             tooltip: "AI Usage — ejecuta ai-usage-collect".to_string(),
-        },
-        StatusState::Invalid => Topbar {
+        }],
+        StatusState::Invalid => vec![Topbar {
             icon: IconKind::Ai,
             label: "!".to_string(),
             severity: Severity::Critical,
             tooltip: "AI Usage — status.json inválido".to_string(),
-        },
-        StatusState::Loaded(status) => topbar_loaded(status),
+        }],
+        StatusState::Loaded(status) => {
+            let stale = status.stale || status.is_stale_by_age();
+            let mut entries = Vec::new();
+
+            if let Some(codex) = &status.codex {
+                entries.push(provider_topbar(
+                    IconKind::Codex,
+                    "Codex",
+                    "codex",
+                    codex.ok,
+                    codex.error_code.as_deref(),
+                    codex.five_hour.as_ref(),
+                    stale,
+                ));
+            }
+
+            if let Some(claude) = &status.claude {
+                entries.push(provider_topbar(
+                    IconKind::Claude,
+                    "Claude",
+                    "claude",
+                    claude.ok,
+                    claude.error_code.as_deref(),
+                    claude.session.as_ref(),
+                    stale,
+                ));
+            }
+
+            if entries.is_empty() {
+                entries.push(Topbar {
+                    icon: IconKind::Ai,
+                    label: "--".to_string(),
+                    severity: Severity::Muted,
+                    tooltip: "AI Usage — sin datos disponibles".to_string(),
+                });
+            }
+
+            entries
+        }
     }
 }
 
-fn topbar_loaded(status: &StatusFile) -> Topbar {
-    if status.login_required() {
+/// Topbar icon/label/severity for a single provider.
+fn provider_topbar(
+    icon: IconKind,
+    name: &str,
+    provider: &str,
+    ok: bool,
+    error_code: Option<&str>,
+    metric: Option<&UsageMetric>,
+    stale: bool,
+) -> Topbar {
+    if matches!(error_code, Some("login_required" | "profile_missing")) {
         return Topbar {
-            icon: IconKind::for_provider(&status.primary.provider),
+            icon,
             label: "login".to_string(),
             severity: Severity::LoginRequired,
-            tooltip: format!(
-                "AI Usage — {} requiere iniciar sesión (ai-usage-auth)",
-                provider_name(&status.primary.provider)
-            ),
+            tooltip: format!("AI Usage — {name} requiere iniciar sesión (ai-usage-auth {provider})"),
         };
     }
 
-    if status.primary.provider == "none" || status.primary.used_percent.is_none() {
+    let used_percent = metric.and_then(|m| m.used_percent);
+
+    if !ok || used_percent.is_none() {
         return Topbar {
-            icon: IconKind::Ai,
+            icon,
             label: "--".to_string(),
             severity: Severity::Muted,
-            tooltip: "AI Usage — sin datos disponibles".to_string(),
+            tooltip: format!("AI Usage — {name} sin datos disponibles"),
         };
     }
 
-    let stale = status.stale || status.is_stale_by_age();
-    let mut severity = severity_for_percent(status.primary.used_percent);
-    let mut label = status.primary.label.clone();
+    let mut severity = severity_for_percent(used_percent);
+    let mut label = percent(used_percent);
 
-    if !status.ok || stale {
+    if stale {
         label.push('!');
         if severity == Severity::Normal {
             severity = Severity::Warning;
@@ -115,14 +154,12 @@ fn topbar_loaded(status: &StatusFile) -> Topbar {
     }
 
     let tooltip = format!(
-        "AI Usage — {} {}{}",
-        provider_name(&status.primary.provider),
-        status.primary.label,
-        if stale { " (datos desactualizados)" } else { "" }
+        "AI Usage — {name} {label}{}",
+        if stale { " (datos desactualizados)" } else { " usado" }
     );
 
     Topbar {
-        icon: IconKind::for_provider(&status.primary.provider),
+        icon,
         label,
         severity,
         tooltip,
@@ -194,6 +231,10 @@ pub fn error_hint(error: &ErrorEntry) -> String {
                 .to_string()
         }
         "network_error" => "Sin conexión o la página no respondió a tiempo.".to_string(),
+        "profile_busy" => {
+            "Ya hay una sesión de Chrome en uso para este proveedor. Esperá a que termine."
+                .to_string()
+        }
         _ => "Revisa el collector con: ai-usage-collect".to_string(),
     }
 }

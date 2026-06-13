@@ -60,14 +60,6 @@ pub struct ClaudeStatus {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct Primary {
-    pub provider: String,
-    #[serde(default)]
-    pub used_percent: Option<f64>,
-    pub label: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct ErrorEntry {
     pub provider: String,
     pub code: String,
@@ -79,10 +71,8 @@ pub struct StatusFile {
     #[allow(dead_code)]
     pub schema_version: u32,
     pub updated_at: String,
-    pub ok: bool,
     #[serde(default)]
     pub stale: bool,
-    pub primary: Primary,
     #[serde(default)]
     pub codex: Option<CodexStatus>,
     #[serde(default)]
@@ -105,20 +95,6 @@ impl StatusFile {
         }
     }
 
-    /// Login-related error for the primary provider, if any.
-    pub fn login_required(&self) -> bool {
-        let provider_error_code = match self.primary.provider.as_str() {
-            "codex" => self.codex.as_ref().and_then(|p| p.error_code.as_deref()),
-            "claude" => self.claude.as_ref().and_then(|p| p.error_code.as_deref()),
-            _ => None,
-        };
-
-        matches!(provider_error_code, Some("login_required" | "profile_missing"))
-            || self
-                .errors
-                .iter()
-                .any(|e| matches!(e.code.as_str(), "login_required" | "profile_missing"))
-    }
 }
 
 /// Outcome of trying to load and parse `status.json`.

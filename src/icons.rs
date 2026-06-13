@@ -19,14 +19,6 @@ pub enum IconKind {
 }
 
 impl IconKind {
-    pub fn for_provider(provider: &str) -> Self {
-        match provider {
-            "codex" => IconKind::Codex,
-            "claude" => IconKind::Claude,
-            _ => IconKind::Ai,
-        }
-    }
-
     pub fn handle(self) -> widget::icon::Handle {
         let bytes = match self {
             IconKind::Ai => AI_ICON,

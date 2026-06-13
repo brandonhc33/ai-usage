@@ -3,10 +3,13 @@ import { chromium } from 'playwright';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import readline from 'node:readline/promises';
+import { clearStaleSingletonLock } from './lib/chrome-profile.mjs';
 
 const HOME = os.homedir();
 const provider = process.argv[2];
+
+const POLL_INTERVAL_MS = 3000;
+const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
 const providers = {
   codex: {
@@ -16,8 +19,8 @@ const providers = {
   },
   claude: {
     profileDir: path.join(HOME, '.config', 'ai-usage-status', 'profiles', 'claude'),
-    url: 'https://claude.ai/settings/usage',
-    validate: /Sesión actual|Current session|Todos los modelos|All models|Usage/i,
+    url: 'https://claude.ai/new#settings/usage',
+    validate: /Sesión actual|Current session|Todos los modelos|All models/i,
   },
 };
 
@@ -26,33 +29,70 @@ if (!providers[provider]) {
   process.exit(1);
 }
 
-const selected = providers[provider];
-await fs.mkdir(selected.profileDir, { recursive: true, mode: 0o700 });
+async function main() {
+  const selected = providers[provider];
+  await fs.mkdir(selected.profileDir, { recursive: true, mode: 0o700 });
+  await clearStaleSingletonLock(selected.profileDir);
 
-const context = await chromium.launchPersistentContext(selected.profileDir, {
-  headless: false,
-  viewport: { width: 1280, height: 900 },
-});
+  const context = await chromium.launchPersistentContext(selected.profileDir, {
+    // Usa el Chrome real del sistema (no el Chromium de Playwright): pasa los
+    // chequeos "Verify you are human" / Private Access Token de Cloudflare
+    // que bloquean al Chromium automatizado.
+    channel: 'chrome',
+    headless: false,
+    viewport: { width: 1280, height: 900 },
+    args: ['--disable-blink-features=AutomationControlled'],
+  });
 
-const page = await context.newPage();
-await page.goto(selected.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  try {
+    const page = await context.newPage();
+    await page.goto(selected.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
 
-console.log(`\nInicia sesión en ${provider}.`);
-console.log('Cuando veas el panel de uso cargado, vuelve a esta terminal y presiona Enter.\n');
+    console.log(`\nInicia sesión en ${provider} en la ventana de Chromium.`);
+    console.log('La sesión se guarda automáticamente apenas se detecte el panel de uso.\n');
 
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-await rl.question('Presiona Enter para validar sesión...');
-rl.close();
+    // No hay terminal interactiva cuando este script se lanza desde el
+    // applet, así que la sesión se valida sondeando el texto de la página
+    // hasta que aparezca el panel de uso (o hasta agotar el tiempo de
+    // espera).
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    let confirmed = false;
 
-await page.waitForTimeout(2000);
-const text = await page.locator('body').innerText({ timeout: 30_000 }).catch(() => '');
+    while (Date.now() < deadline) {
+      if (page.isClosed()) {
+        console.error('La ventana se cerró antes de confirmar el login.');
+        process.exitCode = 2;
+        return;
+      }
 
-if (!selected.validate.test(text)) {
-  console.error(`No pude confirmar que estés en la pantalla de uso de ${provider}.`);
-  console.error('La sesión pudo guardarse igual, pero debes revisar URL/textos/idioma.');
-  await context.close();
-  process.exit(2);
+      const text = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+      if (selected.validate.test(text)) {
+        confirmed = true;
+        break;
+      }
+
+      await page.waitForTimeout(POLL_INTERVAL_MS).catch(() => {});
+    }
+
+    if (!confirmed) {
+      console.error(`No se detectó el panel de uso de ${provider} dentro del tiempo de espera.`);
+      console.error('La sesión pudo guardarse igual; podés intentar "Actualizar ahora".');
+      process.exitCode = 2;
+      return;
+    }
+
+    console.log(`Login guardado correctamente para ${provider}.`);
+  } finally {
+    await context.close().catch(() => {});
+  }
 }
 
-await context.close();
-console.log(`Login guardado correctamente para ${provider}.`);
+main().catch((error) => {
+  if (error.code === 'profile_busy') {
+    console.error(`${provider}: ya hay una sesión de Chrome en uso para este perfil.`);
+    console.error('Esperá a que termine y volvé a intentar.');
+  } else {
+    console.error(`ai-usage-auth ${provider}: ${error.message}`);
+  }
+  process.exitCode = 1;
+});
