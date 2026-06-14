@@ -24,6 +24,8 @@ pub struct AppModel {
     popup: Option<Id>,
     /// Last status read from `~/.cache/ai-usage-status/status.json`.
     status: StatusState,
+    /// Whether `ai-usage-collect` is currently running.
+    loading: bool,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -33,6 +35,7 @@ pub enum Message {
     Tick,
     Surface(cosmic::surface::Action),
     RunCollector,
+    CollectorFinished,
     RunLogin(&'static str),
     OpenLink(&'static str),
 }
@@ -109,6 +112,14 @@ impl cosmic::Application for AppModel {
                     .spacing(4)
                     .push(icon)
                     .push(label),
+            );
+        }
+
+        if self.loading {
+            content = content.push(
+                widget::indeterminate_circular()
+                    .size(f32::from(suggested.1))
+                    .bar_height(2.0),
             );
         }
 
@@ -220,11 +231,18 @@ impl cosmic::Application for AppModel {
                 ));
             }
             Message::RunCollector => {
-                run_collector();
+                if self.loading {
+                    return Task::none();
+                }
+                self.loading = true;
                 return cosmic::task::future(async {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    Message::Tick
+                    run_collector().await;
+                    Message::CollectorFinished
                 });
+            }
+            Message::CollectorFinished => {
+                self.loading = false;
+                self.status = status::load_status();
             }
             Message::RunLogin(provider) => {
                 run_login(provider);
@@ -292,13 +310,32 @@ fn popup_view(state: &AppModel) -> Element<'_, Message> {
 
     content = content.push(widget::divider::horizontal::default());
 
+    let update_button = widget::button::standard(if state.loading {
+        "Actualizando…"
+    } else {
+        "Actualizar ahora"
+    })
+    .width(Length::Fill);
+    let update_button = if state.loading {
+        update_button
+    } else {
+        update_button.on_press(Message::RunCollector)
+    };
+
+    let update_row: Element<'_, Message> = if state.loading {
+        widget::Row::new()
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .push(update_button)
+            .push(widget::indeterminate_circular().size(20.0).bar_height(3.0))
+            .into()
+    } else {
+        update_button.into()
+    };
+
     let actions = widget::Column::new()
         .spacing(8)
-        .push(
-            widget::button::standard("Actualizar ahora")
-                .on_press(Message::RunCollector)
-                .width(Length::Fill),
-        )
+        .push(update_row)
         .push(
             widget::button::text("Iniciar sesión Codex")
                 .on_press(Message::RunLogin("codex"))
@@ -396,24 +433,33 @@ fn card_header<'a>(title: &'a str, icon: IconKind) -> Element<'a, Message> {
 }
 
 fn metric_row<'a>(label: &'a str, metric: &Option<UsageMetric>) -> Element<'a, Message> {
+    let usage = widget::text(format::usage_summary(metric));
+    let usage = match format::metric_severity(metric).color() {
+        Some(color) => usage.class(theme::Text::Color(color)),
+        None => usage,
+    };
+
+    let reset = widget::text::caption(format!("reinicia {}", format::reset_label(metric)))
+        .class(theme::Text::Color(format::RESET_LABEL_COLOR));
+
     widget::Column::new()
         .push(
             widget::Row::new()
                 .spacing(8)
                 .push(widget::text(label).width(Length::Fixed(64.0)))
-                .push(widget::text(format::usage_summary(metric))),
+                .push(usage),
         )
-        .push(widget::text::caption(format!(
-            "reinicia {}",
-            format::reset_label(metric)
-        )))
+        .push(reset)
         .into()
 }
 
-/// Runs the external collector in the background. The applet never scrapes
-/// or logs in itself; see docs/docs/02-architecture.md.
-fn run_collector() {
-    if let Err(why) = Command::new("ai-usage-collect").spawn() {
+/// Runs the external collector and waits for it to finish. The applet never
+/// scrapes or logs in itself; see docs/docs/02-architecture.md.
+async fn run_collector() {
+    if let Err(why) = tokio::process::Command::new("ai-usage-collect")
+        .status()
+        .await
+    {
         eprintln!("ai-usage-applet: no se pudo ejecutar ai-usage-collect: {why}");
     }
 }

@@ -13,6 +13,10 @@ use cosmic::iced::Color;
 pub const WARNING_USED_PERCENT: f64 = 51.0;
 pub const CRITICAL_USED_PERCENT: f64 = 76.0;
 
+/// Color used to highlight "reinicia ..." reset labels in the popup so
+/// they stand out from the surrounding text.
+pub const RESET_LABEL_COLOR: Color = Color::from_rgb(0.45, 0.68, 0.98);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Normal,
@@ -194,6 +198,15 @@ pub fn reset_label(metric: &Option<UsageMetric>) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or("--")
         .to_string()
+}
+
+/// Severity of a metric's `used_percent`, for coloring popup values.
+/// `Muted` when there's no data yet (shown as `--`).
+pub fn metric_severity(metric: &Option<UsageMetric>) -> Severity {
+    match metric.as_ref().and_then(|m| m.used_percent) {
+        Some(p) => severity_for_percent(Some(p)),
+        None => Severity::Muted,
+    }
 }
 
 /// `used_percent` / `remaining_percent` formatted for a metric row,
