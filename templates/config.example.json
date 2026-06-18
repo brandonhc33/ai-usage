@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "refresh_seconds": 180,
+  "refresh_seconds": 120,
   "primary": {
     "provider": "codex",
     "metric": "five_hour",

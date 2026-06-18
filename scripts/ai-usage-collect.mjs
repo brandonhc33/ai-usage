@@ -55,6 +55,74 @@ function n(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// Días de la semana (es/en, con y sin acento) → índice 0=domingo..6=sábado.
+const WEEKDAYS = {
+  dom: 0, lun: 1, mar: 2, mié: 3, mie: 3, jue: 4, vie: 5, sáb: 6, sab: 6,
+  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+};
+
+/** Extrae `{ h, m }` (24h) de un reloj tipo `7:12 AM` o `11:59 p.m.`. */
+function parseClock(text) {
+  const match = text.match(/(\d{1,2}):(\d{2})\s*([ap])\s*\.?\s*m/i) || text.match(/(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  let h = Number(match[1]);
+  const m = Number(match[2]);
+  if (match[3]) {
+    const pm = /p/i.test(match[3]);
+    if (pm && h < 12) h += 12;
+    if (!pm && h === 12) h = 0;
+  }
+  return { h, m };
+}
+
+/**
+ * Convierte una etiqueta "reinicia" en un timestamp Unix (segundos), para que
+ * el applet muestre los minutos restantes en vivo. Maneja cuatro formatos:
+ *   - Duración:        "en 4 h 34 min"        → ahora + duración
+ *   - Fecha completa:  "Jun 25, 2026 2:12 AM" → Date.parse (locale + tz local)
+ *   - Día + hora:      "mié., 11:59 p.m."     → próxima ocurrencia de ese día
+ *   - Solo hora:       "7:12 AM"              → hoy, o mañana si ya pasó
+ * Devuelve null si no puede inferir un instante (nunca inventa una fecha).
+ */
+function resetEpochSeconds(label, now = new Date()) {
+  if (!label) return null;
+  const text = String(label).trim();
+  const nowSec = Math.round(now.getTime() / 1000);
+
+  const dur = text.match(
+    /^(?:en\s+)?(?:(\d+)\s*(?:d|días?|dias?|days?)\s*)?(?:(\d+)\s*(?:h|hr|horas?|hours?)\s*)?(?:(\d+)\s*(?:min|mins?|minutos?)\s*)?$/i,
+  );
+  if (dur && (dur[1] || dur[2] || dur[3])) {
+    const mins = Number(dur[1] || 0) * 1440 + Number(dur[2] || 0) * 60 + Number(dur[3] || 0);
+    return nowSec + mins * 60;
+  }
+
+  if (/\d{4}/.test(text)) {
+    const parsed = Date.parse(text);
+    if (!Number.isNaN(parsed)) return Math.round(parsed / 1000);
+  }
+
+  const clock = parseClock(text);
+  if (!clock) return null;
+
+  // Anclado al inicio: la etiqueta de día empieza con el día ("mié., 11:59
+  // p.m."). No se usa \b porque las vocales acentuadas (mié, sáb) no cuentan
+  // como "word char" en JS y romperían el límite de palabra.
+  const weekday = text.toLowerCase().match(/^(dom|lun|mar|mié|mie|jue|vie|sáb|sab|sun|mon|tue|wed|thu|fri|sat)/);
+  const target = new Date(now);
+  target.setHours(clock.h, clock.m, 0, 0);
+
+  if (weekday) {
+    let add = (WEEKDAYS[weekday[1]] - target.getDay() + 7) % 7;
+    if (add === 0 && target.getTime() <= now.getTime()) add = 7;
+    target.setDate(target.getDate() + add);
+  } else if (target.getTime() <= now.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+
+  return Math.round(target.getTime() / 1000);
+}
+
 function parseCodex(raw) {
   const text = normalizeText(raw);
 
@@ -83,15 +151,55 @@ function parseCodex(raw) {
       used_percent: fiveRemaining === null ? null : 100 - fiveRemaining,
       remaining_percent: fiveRemaining,
       reset_label: fiveHour ? fiveHour[5].trim() : null,
-      reset_epoch: null,
+      reset_epoch: fiveHour ? resetEpochSeconds(fiveHour[5].trim()) : null,
     },
     weekly: {
       used_percent: weekRemaining === null ? null : 100 - weekRemaining,
       remaining_percent: weekRemaining,
       reset_label: weekly ? weekly[5].trim() : null,
-      reset_epoch: null,
+      reset_epoch: weekly ? resetEpochSeconds(weekly[5].trim()) : null,
     },
     credits_remaining: credits ? n(credits[2]) : null,
+  };
+}
+
+/**
+ * Sección "Créditos de uso" del panel de Claude. Solo existe si el usuario
+ * la activó, así que todos los campos son opcionales y un fallo de parseo
+ * devuelve `null` sin afectar el resto del status. Las regex se anclan a sus
+ * propias etiquetas (no al orden) y el guard `(?!USD)` evita cruzar otro
+ * monto, para tolerar variaciones de layout entre cuentas/idiomas.
+ */
+function parseClaudeCredits(text) {
+  if (!/(Créditos de uso|Usage credits)/i.test(text)) {
+    return null;
+  }
+
+  const spent = text.match(/USD\s*([\d.,]+)\s*(?:gastado|spent)\b/i);
+  const spentPercent = text.match(
+    /USD\s*[\d.,]+\s*(?:gastado|spent)\b[\s\S]*?(\d+)\s*%\s*(?:usado|used)/i,
+  );
+  // El label del reset termina antes del siguiente porcentaje o monto, para no
+  // tragarse el "16% usado" que el DOM intercala (p. ej. "Jul 1 16% usado USD").
+  const reset = text.match(
+    /(?:gastado|spent)\b[\s\S]*?(?:Se restablece(?:\s+el)?|Resets(?:\s+on)?)\s+(.+?)\s+(?:\d+\s*%|USD\b)/i,
+  );
+  const limit = text.match(
+    /USD\s*([\d.,]+)(?:(?!USD)[\s\S]){0,40}?(?:Límite de gasto mensual|Monthly spending limit)/i,
+  );
+  // El saldo puede aparecer como "USD 9.51 ... Saldo actual" o al revés, según
+  // el orden del DOM; se prueban ambos sentidos.
+  const balance =
+    text.match(/USD\s*([\d.,]+)(?:(?!USD)[\s\S]){0,40}?(?:Saldo actual|Current balance)/i) ||
+    text.match(/(?:Saldo actual|Current balance)(?:(?!USD)[\s\S]){0,60}?USD\s*([\d.,]+)/i);
+
+  return {
+    enabled: true,
+    spent_usd: spent ? n(spent[1]) : null,
+    spent_percent: spentPercent ? n(spentPercent[1]) : null,
+    limit_usd: limit ? n(limit[1]) : null,
+    balance_usd: balance ? n(balance[1]) : null,
+    reset_label: reset ? reset[1].trim() : null,
   };
 }
 
@@ -125,18 +233,19 @@ function parseClaude(raw) {
       used_percent: sessionUsed,
       remaining_percent: sessionUsed === null ? null : 100 - sessionUsed,
       reset_label: session ? `en ${session[3].trim()}` : null,
-      reset_epoch: null,
+      reset_epoch: session ? resetEpochSeconds(`en ${session[3].trim()}`) : null,
     },
     weekly: {
       used_percent: weeklyUsed,
       remaining_percent: weeklyUsed === null ? null : 100 - weeklyUsed,
       reset_label: weekly ? weekly[3].trim() : null,
-      reset_epoch: null,
+      reset_epoch: weekly ? resetEpochSeconds(weekly[3].trim()) : null,
     },
     daily_routines: {
       used: routines ? n(routines[2]) : null,
       limit: routines ? n(routines[3]) : null,
     },
+    credits: parseClaudeCredits(text),
   };
 }
 
@@ -148,7 +257,28 @@ async function readJson(file, fallback) {
   }
 }
 
-async function scrapeProvider(name, providerConfig, parser) {
+/**
+ * Espera a que el texto de uso esté presente en la página y lo devuelve
+ * apenas aparece, en vez de esperar siempre `maxMs` fijos. Sondea cada
+ * `POLL_MS` y se rinde a los `maxMs` (devolviendo lo último que haya, así
+ * la detección de login_required sigue funcionando). Esto reduce el tiempo
+ * típico de scraping de ~8 s a ~1-3 s sin tocar el techo de seguridad, lo
+ * que abarata cada corrida del recolector.
+ */
+const POLL_MS = 250;
+async function waitForUsageText(page, readyPattern, maxMs) {
+  const deadline = Date.now() + maxMs;
+  let text = '';
+  for (;;) {
+    text = await page.locator('body').innerText({ timeout: 30_000 });
+    if (readyPattern.test(text) || Date.now() >= deadline) {
+      return text;
+    }
+    await page.waitForTimeout(POLL_MS);
+  }
+}
+
+async function scrapeProvider(name, providerConfig, parser, readyPattern) {
   const profileDir = expandHome(providerConfig.profile_dir);
   try {
     await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
@@ -169,8 +299,7 @@ async function scrapeProvider(name, providerConfig, parser) {
       try {
         const page = await context.newPage();
         await page.goto(providerConfig.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-        await page.waitForTimeout(providerConfig.wait_ms ?? 8000);
-        return await page.locator('body').innerText({ timeout: 30_000 });
+        return await waitForUsageText(page, readyPattern, providerConfig.wait_ms ?? 8000);
       } finally {
         await context.close();
       }
@@ -232,12 +361,17 @@ async function main() {
     errors: [],
   };
 
+  // Marcadores que solo aparecen cuando el panel de uso ya cargó, para que
+  // `waitForUsageText` corte apenas haya datos en vez de esperar el tope.
+  const CODEX_READY = /(Límite de uso|usage limit|Créditos restantes|Credits remaining)/i;
+  const CLAUDE_READY = /(Sesión actual|Current session|Todos los modelos|All models)/i;
+
   if (config.providers.codex?.enabled) {
-    result.codex = await scrapeProvider('codex', config.providers.codex, parseCodex);
+    result.codex = await scrapeProvider('codex', config.providers.codex, parseCodex, CODEX_READY);
   }
 
   if (config.providers.claude?.enabled) {
-    result.claude = await scrapeProvider('claude', config.providers.claude, parseClaude);
+    result.claude = await scrapeProvider('claude', config.providers.claude, parseClaude, CLAUDE_READY);
   }
 
   for (const providerName of ['codex', 'claude']) {

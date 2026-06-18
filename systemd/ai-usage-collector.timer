@@ -1,9 +1,9 @@
 [Unit]
-Description=Run AI usage collector every 3 minutes
+Description=Run AI usage collector every 2 minutes
 
 [Timer]
 OnBootSec=30
-OnUnitActiveSec=180
+OnUnitActiveSec=120
 Unit=ai-usage-collector.service
 
 [Install]

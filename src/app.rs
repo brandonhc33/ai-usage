@@ -211,7 +211,10 @@ impl cosmic::Application for AppModel {
 
     /// Register subscriptions for this application.
     fn subscription(&self) -> Subscription<Self::Message> {
-        time::every(Duration::from_secs(30)).map(|_| Message::Tick)
+        // Solo relee status.json del disco (barato); el scraping real lo hace
+        // el recolector externo vía systemd. Un tick corto refresca antes el
+        // "hace X min" y muestra los datos nuevos apenas el recolector termina.
+        time::every(Duration::from_secs(15)).map(|_| Message::Tick)
     }
 
     /// Handles messages emitted by the application and its widgets.
@@ -333,36 +336,73 @@ fn popup_view(state: &AppModel) -> Element<'_, Message> {
         update_button.into()
     };
 
+    // Si la sesión ya está activa, el botón "Iniciar sesión X" se vuelve
+    // "Ir a X" y abre el panel del proveedor en vez de relanzar el login.
     let actions = widget::Column::new()
         .spacing(8)
         .push(update_row)
         .push(
-            widget::button::text("Iniciar sesión Codex")
-                .on_press(Message::RunLogin("codex"))
-                .width(Length::Fill),
-        )
-        .push(
-            widget::button::text("Iniciar sesión Claude")
-                .on_press(Message::RunLogin("claude"))
-                .width(Length::Fill),
+            widget::Row::new()
+                .spacing(8)
+                .push(provider_action_button(
+                    "Codex",
+                    "codex",
+                    CODEX_USAGE_URL,
+                    session_active(&state.status, "codex"),
+                ))
+                .push(provider_action_button(
+                    "Claude",
+                    "claude",
+                    CLAUDE_USAGE_URL,
+                    session_active(&state.status, "claude"),
+                )),
         );
 
-    let links = widget::Row::new()
-        .spacing(8)
-        .push(
-            widget::button::text("Panel Codex")
-                .on_press(Message::OpenLink(CODEX_USAGE_URL))
-                .width(Length::Fill),
-        )
-        .push(
-            widget::button::text("Panel Claude")
-                .on_press(Message::OpenLink(CLAUDE_USAGE_URL))
-                .width(Length::Fill),
-        );
-
-    content = content.push(actions).push(links);
+    content = content.push(actions);
 
     content.into()
+}
+
+/// Whether the given provider currently has an active session, based on the
+/// loaded status. Unknown/missing data is treated as inactive so the login
+/// action stays available.
+fn session_active(status: &StatusState, provider: &str) -> bool {
+    let StatusState::Loaded(status) = status else {
+        return false;
+    };
+    let (ok, error_code) = match provider {
+        "codex" => match &status.codex {
+            Some(c) => (c.ok, c.error_code.as_deref()),
+            None => return false,
+        },
+        "claude" => match &status.claude {
+            Some(c) => (c.ok, c.error_code.as_deref()),
+            None => return false,
+        },
+        _ => return false,
+    };
+    format::is_session_active(ok, error_code)
+}
+
+/// Button that logs in to a provider when its session is inactive, or opens
+/// its usage dashboard ("Ir a X") when the session is already active.
+fn provider_action_button<'a>(
+    name: &'a str,
+    provider: &'static str,
+    url: &'static str,
+    active: bool,
+) -> Element<'a, Message> {
+    if active {
+        widget::button::text(format!("Ir a {name}"))
+            .on_press(Message::OpenLink(url))
+            .width(Length::Fill)
+            .into()
+    } else {
+        widget::button::text(format!("Iniciar sesión {name}"))
+            .on_press(Message::RunLogin(provider))
+            .width(Length::Fill)
+            .into()
+    }
 }
 
 fn codex_card(codex: &CodexStatus) -> Element<'_, Message> {
@@ -407,6 +447,10 @@ fn claude_card(claude: &ClaudeStatus) -> Element<'_, Message> {
                     .push(widget::text("Rutinas").width(Length::Fixed(64.0)))
                     .push(widget::text(format::routines(&claude.daily_routines))),
             );
+
+        if let Some(credits) = &claude.credits {
+            card = card.push(credits_section(credits));
+        }
     } else {
         card = card.push(widget::text::caption(
             claude
@@ -417,6 +461,43 @@ fn claude_card(claude: &ClaudeStatus) -> Element<'_, Message> {
     }
 
     widget::container(card).padding(8).into()
+}
+
+/// Claude's "Créditos de uso" block: amount spent (colored by spend %),
+/// balance/limit, and the reset date. Only shown when the account has
+/// pay-as-you-go credits enabled.
+fn credits_section(credits: &status::ClaudeCredits) -> Element<'_, Message> {
+    let spent = widget::text(format::credits_spent(credits));
+    let spent = match format::credits_severity(credits).color() {
+        Some(color) => spent.class(theme::Text::Color(color)),
+        None => spent,
+    };
+
+    let mut column = widget::Column::new()
+        .spacing(4)
+        .push(widget::divider::horizontal::default())
+        .push(widget::text::caption("Créditos de uso"))
+        .push(
+            widget::Row::new()
+                .spacing(8)
+                .push(widget::text("Gasto").width(Length::Fixed(64.0)))
+                .push(spent),
+        )
+        .push(
+            widget::Row::new()
+                .spacing(8)
+                .push(widget::text("Saldo").width(Length::Fixed(64.0)))
+                .push(widget::text(format::credits_balance(credits))),
+        );
+
+    if let Some(reset) = credits.reset_label.as_deref().filter(|s| !s.is_empty()) {
+        column = column.push(
+            widget::text::caption(format!("reinicia {reset}"))
+                .class(theme::Text::Color(format::RESET_LABEL_COLOR)),
+        );
+    }
+
+    column.into()
 }
 
 fn card_header<'a>(title: &'a str, icon: IconKind) -> Element<'a, Message> {
@@ -439,7 +520,7 @@ fn metric_row<'a>(label: &'a str, metric: &Option<UsageMetric>) -> Element<'a, M
         None => usage,
     };
 
-    let reset = widget::text::caption(format!("reinicia {}", format::reset_label(metric)))
+    let reset = widget::text::caption(format::reset_label_with_minutes(metric))
         .class(theme::Text::Color(format::RESET_LABEL_COLOR));
 
     widget::Column::new()

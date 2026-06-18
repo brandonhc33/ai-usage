@@ -21,12 +21,32 @@ pub struct UsageMetric {
     pub remaining_percent: Option<f64>,
     #[serde(default)]
     pub reset_label: Option<String>,
+    /// Unix timestamp (seconds) of the reset, computed by the collector from
+    /// `reset_label`. `None` when the label couldn't be resolved to an instant.
+    #[serde(default)]
+    pub reset_epoch: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DailyRoutines {
     pub used: Option<i64>,
     pub limit: Option<i64>,
+}
+
+/// Claude's "Créditos de uso" section. Only present when the user enabled
+/// pay-as-you-go credits, so every field is optional.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClaudeCredits {
+    #[serde(default)]
+    pub spent_usd: Option<f64>,
+    #[serde(default)]
+    pub spent_percent: Option<f64>,
+    #[serde(default)]
+    pub limit_usd: Option<f64>,
+    #[serde(default)]
+    pub balance_usd: Option<f64>,
+    #[serde(default)]
+    pub reset_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +73,8 @@ pub struct ClaudeStatus {
     pub weekly: Option<UsageMetric>,
     #[serde(default)]
     pub daily_routines: Option<DailyRoutines>,
+    #[serde(default)]
+    pub credits: Option<ClaudeCredits>,
     #[serde(default)]
     pub error_code: Option<String>,
     #[serde(default)]

@@ -221,7 +221,7 @@ systemctl --user list-timers | grep ai-usage
 journalctl --user -u ai-usage-collector.service
 ```
 
-Por defecto corre 30s después del login y luego cada 3 minutos
+Por defecto corre 30s después del login y luego cada 2 minutos
 (`systemd/ai-usage-collector.timer`).
 
 ## Permisos y privacidad

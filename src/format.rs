@@ -6,7 +6,7 @@
 //! over plain data, and keeps the percentage/threshold rules in one place.
 
 use crate::icons::IconKind;
-use crate::status::{DailyRoutines, ErrorEntry, StatusFile, StatusState, UsageMetric};
+use crate::status::{ClaudeCredits, DailyRoutines, ErrorEntry, StatusFile, StatusState, UsageMetric};
 use cosmic::iced::Color;
 
 /// Mirrors the defaults in `docs/templates/config.example.json`.
@@ -170,6 +170,15 @@ fn provider_topbar(
     }
 }
 
+/// Whether a provider has an active session, so the popup can offer "Ir a X"
+/// (open the dashboard) instead of "Iniciar sesión X". A session is only
+/// considered inactive when the collector explicitly reported a login/profile
+/// problem; any other failure (network, page_changed) still means the user is
+/// logged in and just couldn't be scraped this time.
+pub fn is_session_active(ok: bool, error_code: Option<&str>) -> bool {
+    ok || !matches!(error_code, Some("login_required" | "profile_missing"))
+}
+
 /// "Actualizado hace 2 min" / "Datos desactualizados" line for the popup header.
 pub fn updated_at_line(status: &StatusFile) -> String {
     let relative = crate::status::format_relative(&status.updated_at)
@@ -187,6 +196,69 @@ pub fn percent(value: Option<f64>) -> String {
     match value {
         Some(v) => format!("{}%", v.round() as i64),
         None => "--".to_string(),
+    }
+}
+
+/// Total de minutos que faltan, inferido de un `reset_label` que sea una
+/// *duración* (p. ej. `en 2 h 33 min` → `Some(153)`). Devuelve `None` cuando
+/// el label es una fecha/hora absoluta (`mié., 11:59 p.m.`, `Jun 18, 2026
+/// 3:29 PM`), porque de ahí no se puede inferir minutos sin adivinar la fecha.
+pub fn remaining_minutes(label: &str) -> Option<i64> {
+    let lower = label.to_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut total = 0i64;
+    let mut found = false;
+    let mut i = 0;
+    while i < tokens.len() {
+        if let Ok(num) = tokens[i].parse::<i64>() {
+            if let Some(mult) = tokens.get(i + 1).and_then(|u| unit_minutes(u)) {
+                total += num * mult;
+                found = true;
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    found.then_some(total)
+}
+
+/// Minutos que representa una unidad de tiempo escrita en español o inglés.
+fn unit_minutes(unit: &str) -> Option<i64> {
+    match unit {
+        "min" | "mins" | "minuto" | "minutos" => Some(1),
+        "h" | "hr" | "hrs" | "hora" | "horas" | "hour" | "hours" => Some(60),
+        "d" | "día" | "dia" | "días" | "dias" | "day" | "days" => Some(1440),
+        "sem" | "semana" | "semanas" | "week" | "weeks" => Some(10080),
+        _ => None,
+    }
+}
+
+/// Minutos restantes hasta el reset de una métrica. Prefiere el `reset_epoch`
+/// calculado por el collector (cuenta regresiva en vivo, válida para horas y
+/// fechas absolutas); si no está, cae al parseo de duración del label. `None`
+/// cuando ya pasó o no se puede inferir.
+pub fn metric_remaining_minutes(metric: &UsageMetric) -> Option<i64> {
+    if let Some(epoch) = metric.reset_epoch {
+        let now = chrono::Utc::now().timestamp();
+        let mins = (epoch - now) / 60;
+        return (mins >= 0).then_some(mins);
+    }
+    metric.reset_label.as_deref().and_then(remaining_minutes)
+}
+
+/// `reinicia <label>` con `(N min)` agregado cuando se puede inferir el tiempo
+/// restante (sea por duración o por `reset_epoch`).
+pub fn reset_label_with_minutes(metric: &Option<UsageMetric>) -> String {
+    let label = reset_label(metric);
+    match metric.as_ref().and_then(metric_remaining_minutes) {
+        Some(mins) => format!("reinicia {label} ({mins} min)"),
+        None => format!("reinicia {label}"),
     }
 }
 
@@ -230,6 +302,42 @@ pub fn routines(routines: &Option<DailyRoutines>) -> String {
             limit: Some(limit),
         }) => format!("{used} / {limit}"),
         _ => "--".to_string(),
+    }
+}
+
+/// `USD 3.24` / `--` for a dollar amount.
+pub fn usd(value: Option<f64>) -> String {
+    match value {
+        Some(v) => format!("USD {v:.2}"),
+        None => "--".to_string(),
+    }
+}
+
+/// `USD 3.24 gastado · 16% usado` for Claude's usage credits, or `--` when
+/// the amounts aren't available.
+pub fn credits_spent(credits: &ClaudeCredits) -> String {
+    let spent = usd(credits.spent_usd);
+    match credits.spent_percent {
+        Some(p) => format!("{spent} gastado · {}% usado", p.round() as i64),
+        None => format!("{spent} gastado"),
+    }
+}
+
+/// `USD 9.51 saldo · USD 20 límite` for Claude's credit balance and cap.
+pub fn credits_balance(credits: &ClaudeCredits) -> String {
+    format!(
+        "{} saldo · {} límite",
+        usd(credits.balance_usd),
+        usd(credits.limit_usd)
+    )
+}
+
+/// Severity for the credits spent percentage, reusing the same thresholds as
+/// the usage windows so high spend turns amber/red.
+pub fn credits_severity(credits: &ClaudeCredits) -> Severity {
+    match credits.spent_percent {
+        Some(p) => severity_for_percent(Some(p)),
+        None => Severity::Muted,
     }
 }
 
